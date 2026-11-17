@@ -89,6 +89,27 @@ commit. All future changes through migrations.
 
 ---
 
+### 8. Production touched directly
+
+**Symptom**: schema or functions changed from the dashboard or with `supabase db push`
+against the linked project; no way to reproduce or undo.
+
+**Fix**: during this workflow, never run `supabase db push`, `supabase db reset --linked`,
+`supabase functions deploy`, `supabase secrets set` or SQL against the remote project.
+Prepare changes as new migration files plus a written rollback, test them on
+`supabase start`, and hand them to the user to apply. Take a backup (`pg_dump`) before
+anything reaches production.
+
+### 9. Real personal data in seeds, fixtures or logs
+
+**Symptom**: `seed.sql`, test fixtures or snapshots copied from production; logs printing
+request bodies with names, phone numbers, emails or health data.
+
+**Critical privacy issue** (GDPR/LGPD) - flag as `critical`. Replace with fictitious data,
+remove from history if it was committed, and log identifiers/error types only.
+
+---
+
 ## Safety net patterns
 
 - **RLS policy tests**: write SQL-level tests using `supabase test db` or pgTAP
@@ -101,7 +122,8 @@ commit. All future changes through migrations.
 
 - `supabase db lint` - SQL linting
 - `supabase db diff` - what's changed in the schema
-- `supabase gen types typescript --linked` - regenerate types
+- `supabase gen types typescript --local` - regenerate types from the local stack
+  (`--linked` reads the remote schema: read-only, but needs the user's access token)
 - `pg_dump` for emergency schema backups before refactor
 
 ---
@@ -115,4 +137,7 @@ Add to CLAUDE.md guard rails:
 - All tables have RLS enabled. Adding a table requires policies in the same migration.
 - All queries use generated `Database` types - no `any`.
 - Schema changes go through migrations only - no Supabase dashboard edits in prod.
+- Every migration ships with a rollback script and is tested on `supabase start` first.
+- Agents never run `supabase db push`, `functions deploy` or `secrets set`; a human applies.
+- Seeds, fixtures and logs contain fictitious data only.
 ```

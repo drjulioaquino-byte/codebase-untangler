@@ -7,13 +7,14 @@ Run once at the start of a fresh engagement.
 """
 
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _guard  # noqa: E402
 
-STATE_DIR = Path(".untangler")
+STATE_DIR = _guard.STATE_DIR
 STATE_JSON = STATE_DIR / "state.json"
 STATE_MD = STATE_DIR / "STATE.md"
 AUDIT_JSON = STATE_DIR / "audit.json"
@@ -46,6 +47,7 @@ def initial_state():
         },
         "stack": [],
         "top_5_signed_off_at": None,
+        "top_5_signoff": None,
         "overrides": []
     }
 
@@ -90,7 +92,8 @@ def render_state_md(state):
     ])
     if state["overrides"]:
         for o in state["overrides"]:
-            lines.append(f"- {o['timestamp']} Phase {o['phase']}: {o['gate']} - {o['reason']}")
+            lines.append(f"- {_guard.one_line(o.get('timestamp'))} Phase {_guard.one_line(o.get('phase'))}: "
+                         f"{_guard.one_line(o.get('gate'))} - {_guard.one_line(o.get('reason'))}")
     else:
         lines.append("(none)")
 
@@ -103,22 +106,30 @@ def render_state_md(state):
 
 
 def main():
-    if STATE_DIR.exists() and STATE_JSON.exists():
-        print(f"ERROR: {STATE_JSON} already exists. Use update_state.py instead.")
-        sys.exit(1)
+    try:
+        _guard.check_state_dir(create=False)
+        if STATE_DIR.exists() and STATE_JSON.exists():
+            print(f"ERROR: {STATE_JSON} already exists. Use update_state.py instead.")
+            sys.exit(1)
+        _guard.check_state_dir(create=True)
 
-    STATE_DIR.mkdir(exist_ok=True)
-
-    state = initial_state()
-    audit = initial_audit()
-
-    STATE_JSON.write_text(json.dumps(state, indent=2))
-    AUDIT_JSON.write_text(json.dumps(audit, indent=2))
-    STATE_MD.write_text(render_state_md(state))
-    DEFERRED_MD.write_text("# Deferred Items\n\nProblems noticed during refactor but deliberately not fixed now.\n\n")
-    OVERRIDES_LOG.write_text("")
-    if not RUNNING_MD.exists():
-        RUNNING_MD.write_text("# How to run this app\n\nDocument the exact steps to run locally.\n\n## Setup\n\n## Run\n\n## Test\n\n")
+        state = initial_state()
+        audit = initial_audit()
+        write = _guard.atomic_write_text
+        write(STATE_JSON, json.dumps(state, indent=2) + "\n")
+        write(AUDIT_JSON, json.dumps(audit, indent=2) + "\n")
+        write(STATE_MD, render_state_md(state))
+        write(DEFERRED_MD, "# Deferred Items\n\nProblems noticed during refactor but deliberately not fixed now.\n\n")
+        write(OVERRIDES_LOG, "")
+        if not RUNNING_MD.exists():
+            write(RUNNING_MD,
+                  "# How to run this app\n\nDocument the exact steps to run locally.\n\n"
+                  "> Never paste secret values (keys, tokens, passwords, connection strings) or real\n"
+                  "> personal data here. Name the environment variable instead, e.g. `SUPABASE_URL`.\n"
+                  "> This file is committed.\n\n"
+                  "## Setup\n\n## Run\n\n## Test\n\n")
+    except _guard.GuardError as exc:
+        _guard.fail(str(exc))
 
     print(f"Initialised state in {STATE_DIR}/")
     print(f"  - {STATE_JSON}")

@@ -28,6 +28,7 @@ A stateful, gated 6-phase workflow:
 - **Override requires a specific phrase**: `"I understand the risk, override gate."` Paraphrases don't count. Every override is logged.
 - **Anti-drift baked in.** When Claude thinks "while I'm in here..." it has to write the item to `deferred.md` and continue with the current task.
 - **Stack-aware.** Next.js, Supabase, Python/FastAPI, Node/Express, React Native each get their own reference file with patterns specific to that stack.
+- **Security-hardened.** Sign-off and overrides are human-only (interactive terminal), workflow fields cannot be forged with `set`, git refs from state are validated, no production side effects, no secrets or real personal data in state. See [SECURITY.md](./SECURITY.md).
 
 ## Prime directive
 
@@ -44,9 +45,19 @@ Every feature that works today must still work after every change. Behaviour fir
 ## What's in the bundle
 
 - `SKILL.md` - the workflow itself
-- `scripts/` - four Python scripts that enforce gates and manage state
+- `scripts/` - four Python scripts that enforce gates and manage state, plus `_guard.py` (shared safety checks)
 - `references/` - audit template, refactor patterns, CLAUDE.md guard rails, state schema
 - `references/stacks/` - stack-specific patterns for Next.js, Supabase, Python/FastAPI, Node/Express, React Native
+
+## Development
+
+```bash
+python3 -m pytest -q tests          # security regression tests
+python3 tools/build_bundle.py       # rebuild codebase-untangler.skill after changing source
+python3 tools/build_bundle.py --check
+```
+
+CI runs all three checks on every pull request.
 
 ## License
 

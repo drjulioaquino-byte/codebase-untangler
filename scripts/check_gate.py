@@ -13,27 +13,39 @@ Usage:
   etc.
 """
 
-import json
 import subprocess
 import sys
 from pathlib import Path
 
-STATE_DIR = Path(".untangler")
-STATE_JSON = STATE_DIR / "state.json"
-AUDIT_JSON = STATE_DIR / "audit.json"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _guard  # noqa: E402
+
+STATE_DIR = _guard.STATE_DIR
+STATE_JSON = _guard.STATE_JSON
+AUDIT_JSON = _guard.AUDIT_JSON
 
 
 def load_state():
-    if not STATE_JSON.exists():
-        print(f"ERROR: {STATE_JSON} not found. Run init_state.py first.")
-        sys.exit(2)
-    return json.loads(STATE_JSON.read_text())
+    try:
+        return _guard.load_json(STATE_JSON)
+    except _guard.GuardError as exc:
+        _guard.fail(str(exc))
 
 
 def load_audit():
-    if not AUDIT_JSON.exists():
-        return None
-    return json.loads(AUDIT_JSON.read_text())
+    try:
+        return _guard.load_json(AUDIT_JSON, required=False)
+    except _guard.GuardError as exc:
+        _guard.fail(str(exc))
+
+
+def baseline_tag(state):
+    try:
+        return _guard.validate_ref(state["baseline"]["git_tag"])
+    except (KeyError, TypeError):
+        _guard.fail("state.json has no baseline.git_tag")
+    except _guard.GuardError as exc:
+        _guard.fail(str(exc))
 
 
 def git_diff_empty():
@@ -48,18 +60,29 @@ def git_branch():
 
 
 def git_tag_exists(tag):
-    result = subprocess.run(["git", "tag", "-l", tag], capture_output=True, text=True)
-    return result.stdout.strip() == tag
+    # `tag` is validated by baseline_tag(); `--` stops option parsing anyway.
+    result = subprocess.run(["git", "tag", "-l", "--", tag], capture_output=True, text=True)
+    return result.returncode == 0 and result.stdout.strip() == tag
+
+
+def running_md_filled():
+    """RUNNING.md must contain real instructions, not just the template headings/notes."""
+    path = STATE_DIR / "RUNNING.md"
+    if path.is_symlink() or not path.is_file():
+        return False
+    body = [ln for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if ln.strip() and not ln.lstrip().startswith(("#", ">"))
+            and ln.strip() != "Document the exact steps to run locally."]
+    return len("".join(body)) > 40
 
 
 def check_phase_0(state):
     checks = []
-    checks.append(("App run command documented", (STATE_DIR / "RUNNING.md").exists() and
-                   len((STATE_DIR / "RUNNING.md").read_text().strip()) > 100))
+    checks.append(("App run command documented", running_md_filled()))
     checks.append(("Baseline LOC captured", state["baseline"]["total_loc"] is not None))
     checks.append(("Baseline test count captured", state["baseline"]["test_count"] is not None))
     checks.append(("Stack detected", len(state["stack"]) > 0))
-    checks.append(("Baseline git tag exists", git_tag_exists(state["baseline"]["git_tag"])))
+    checks.append(("Baseline git tag exists", git_tag_exists(baseline_tag(state))))
     branch = git_branch()
     checks.append(("On a refactor branch", branch is not None and branch.startswith("refactor/")))
     return checks
@@ -74,20 +97,28 @@ def check_phase_1(state):
                    len(Path("REFACTOR_AUDIT.md").read_text().splitlines()) > 100))
     checks.append(("audit.json has >= 5 issues", audit is not None and len(audit.get("issues", [])) >= 5))
     checks.append(("Top 5 selected in audit.json", audit is not None and len(audit.get("top_5", [])) == 5))
-    checks.append(("Top 5 signed off by user", state.get("top_5_signed_off_at") is not None))
+    signoff = state.get("top_5_signoff") or {}
+    checks.append(("Top 5 signed off by user (interactive `update_state.py signoff`)",
+                   state.get("top_5_signed_off_at") is not None
+                   and signoff.get("via") == "interactive"))
 
     # Verify no code changes happened during audit phase
     # (only state files and audit doc should have changed)
-    result = subprocess.run(
-        ["git", "diff", "--name-only", state["baseline"]["git_tag"]],
-        capture_output=True, text=True
-    )
-    if result.returncode == 0:
-        changed = [f for f in result.stdout.strip().split("\n") if f]
-        allowed_prefixes = (".untangler/", "REFACTOR_AUDIT.md")
-        code_changes = [f for f in changed if not f.startswith(allowed_prefixes) and f]
-        checks.append((f"No code changes during audit (got {len(code_changes)} unexpected)",
-                       len(code_changes) == 0))
+    # Tracked changes since the baseline tag, plus untracked files (git diff alone
+    # would not see a brand-new source file). Fail closed if git errors.
+    tag = baseline_tag(state)
+    diff = subprocess.run(["git", "diff", "--name-only", tag, "--"],
+                          capture_output=True, text=True)
+    untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"],
+                               capture_output=True, text=True)
+    if diff.returncode != 0 or untracked.returncode != 0:
+        checks.append(("No code changes during audit (git diff failed)", False))
+        return checks
+    changed = [f for f in (diff.stdout + "\n" + untracked.stdout).split("\n") if f]
+    allowed = lambda f: f.startswith(".untangler/") or f == "REFACTOR_AUDIT.md"
+    code_changes = sorted({f for f in changed if not allowed(f)})
+    checks.append((f"No code changes during audit (got {len(code_changes)} unexpected)",
+                   len(code_changes) == 0))
     return checks
 
 
@@ -157,7 +188,8 @@ def check_phase_5(state):
     checks = []
     checks.append(("HANDOVER.md exists", (STATE_DIR / "HANDOVER.md").exists()))
     # Check tag exists
-    result = subprocess.run(["git", "tag", "-l", "refactor-complete-*"], capture_output=True, text=True)
+    result = subprocess.run(["git", "tag", "-l", "--", "refactor-complete-*"],
+                            capture_output=True, text=True)
     checks.append(("refactor-complete tag set", bool(result.stdout.strip())))
     return checks
 
@@ -170,6 +202,15 @@ PHASE_CHECKERS = {
     4: check_phase_4,
     5: check_phase_5,
 }
+
+
+def run_checks(phase, state):
+    """Return [(name, ok)] for a phase. Used by update_state.py advance as well."""
+    return PHASE_CHECKERS[phase](state)
+
+
+def gate_passes(phase, state):
+    return all(ok for _, ok in run_checks(phase, state))
 
 
 def main():
@@ -186,7 +227,7 @@ def main():
         sys.exit(2)
 
     state = load_state()
-    checks = PHASE_CHECKERS[phase](state)
+    checks = run_checks(phase, state)
 
     print(f"\nGate check for Phase {phase} ({state['phases'][str(phase)]['name']}):\n")
     passed = 0
@@ -206,8 +247,9 @@ def main():
         for f in failed_items:
             print(f"  - {f}")
         print()
-        print("To override (use the magic phrase):")
-        print('  "I understand the risk, override gate."')
+        print("To override, the human runs this in an interactive terminal and types the phrase:")
+        print(f'  python3 scripts/update_state.py override {phase} "<gate>" "<reason>"')
+        print(f'  phrase: "{_guard.MAGIC_PHRASE}"')
         print()
         sys.exit(1)
 
