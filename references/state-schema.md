@@ -32,13 +32,19 @@ The source of truth for workflow progress. Machine-readable. Updated by `update_
     "tests_failing": 2
   },
   "stack": ["nextjs", "supabase"],
-  "top_5_signed_off_at": null,
+  "top_5_signed_off_at": "2026-05-12T09:00:00Z",
+  "top_5_signoff": {
+    "at": "2026-05-12T09:00:00Z",
+    "via": "interactive",
+    "top_5": ["I-001", "I-002", "I-003", "I-004", "I-005"]
+  },
   "overrides": [
     {
       "timestamp": "2026-05-13T10:00:00Z",
       "phase": "2",
       "gate": "deliberate-break-test",
-      "reason": "Time-boxed engagement; user accepts risk."
+      "reason": "Time-boxed engagement; user accepts risk.",
+      "via": "interactive"
     }
   ],
   "last_test_run": {
@@ -63,7 +69,13 @@ The source of truth for workflow progress. Machine-readable. Updated by `update_
 | `baseline.branch` | string | The refactor branch name |
 | `stack` | array of string | Detected stacks (used to load reference files) |
 | `top_5_signed_off_at` | ISO timestamp or null | When user confirmed the Top 5 |
-| `overrides` | array | Every gate override, with reason |
+| `top_5_signoff` | object or null | Written only by the interactive `signoff` command |
+| `overrides` | array | Every gate override, with reason (written only by interactive `override`) |
+
+`schema_version`, `started_at`, `current_phase`, `phases`, `top_5_signed_off_at`,
+`top_5_signoff`, `overrides`, `last_test_run` and `baseline.git_tag` are workflow-control
+fields: `update_state.py set` refuses them. `baseline.git_tag` must be a plain ref name
+(letters, digits, `._/-`, starting with a letter or digit).
 | `last_test_run` | object | Latest test execution status |
 
 ---
